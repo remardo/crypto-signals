@@ -1,0 +1,157 @@
+{
+  "name": "Crypto Signal Evaluator",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          {
+            "resource": "message"
+          }
+        ],
+        "updateFields": {}
+      },
+      "id": "1",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1,
+      "position": [
+        100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "const text = $json[\"message\"];\nconst regex = /(?<symbol>[A-Z]{3,5})\\s*(long|short)?[\\s\\S]*?entry[:\\-]?\\s*(?<entry>\\d+(\\.\\d+)?)[\\s\\S]*?sl[:\\-]?\\s*(?<sl>\\d+(\\.\\d+)?)([\\s\\S]*?tp\\d*[:\\-]?\\s*(?<tp1>\\d+(\\.\\d+)?))?([\\s\\S]*?tp\\d*[:\\-]?\\s*(?<tp2>\\d+(\\.\\d+)?))?([\\s\\S]*?tp\\d*[:\\-]?\\s*(?<tp3>\\d+(\\.\\d+)?))?/i;\n\nconst match = text.match(regex);\nif (!match || !match.groups) return [];\n\nreturn [\n  {\n    json: {\n      symbol: match.groups.symbol + 'USDT',\n      entry: parseFloat(match.groups.entry),\n      sl: parseFloat(match.groups.sl),\n      tp1: parseFloat(match.groups.tp1),\n      tp2: parseFloat(match.groups.tp2),\n      tp3: parseFloat(match.groups.tp3),\n      direction: /short/i.test(text) ? 'short' : 'long',\n      timestamp: $json[\"date\"]\n    }\n  }\n];"
+      },
+      "id": "2",
+      "name": "Parse Signal",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.binance.com/api/v3/klines",
+        "method": "GET",
+        "queryParameters": [
+          {
+            "name": "symbol",
+            "value": "={{$json[\"symbol\"]}}"
+          },
+          {
+            "name": "interval",
+            "value": "1m"
+          },
+          {
+            "name": "limit",
+            "value": "100"
+          }
+        ]
+      },
+      "id": "3",
+      "name": "Fetch Binance OHLC",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "const data = $json;\nconst signal = $node[\"Parse Signal\"].json;\n\nlet activated = false;\nlet result = \"not_triggered\";\nlet profit = 0;\nlet tp_hit = null;\nconst entry = signal.entry;\nconst sl = signal.sl;\nconst direction = signal.direction;\n\nfor (const candle of data) {\n  const high = parseFloat(candle[2]);\n  const low = parseFloat(candle[3]);\n\n  if (!activated) {\n    if ((direction === \"long\" && low <= entry && high >= entry) ||\n        (direction === \"short\" && high >= entry && low <= entry)) {\n      activated = true;\n      continue;\n    }\n  } else {\n    const tps = [signal.tp1, signal.tp2, signal.tp3].filter(tp => tp);\n    for (let i = 0; i < tps.length; i++) {\n      if ((direction === \"long\" && high >= tps[i]) || \n          (direction === \"short\" && low <= tps[i])) {\n        result = \"tp\" + (i + 1);\n        tp_hit = i + 1;\n        profit = ((tps[i] - entry) / (entry)) * 100 * (direction === \"short\" ? -1 : 1);\n        return [{ json: { ...signal, result, profit, tp_hit } }];\n      }\n    }\n\n    if ((direction === \"long\" && low <= sl) || \n        (direction === \"short\" && high >= sl)) {\n      result = \"sl\";\n      profit = ((sl - entry) / entry) * 100 * (direction === \"short\" ? -1 : 1);\n      return [{ json: { ...signal, result, profit, tp_hit: 0 } }];\n    }\n  }\n}\nreturn [{ json: { ...signal, result, profit, tp_hit } }];"
+      },
+      "id": "4",
+      "name": "Evaluate Signal",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        700,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "sheetId": "YOUR_GOOGLE_SHEET_ID",
+        "range": "Sheet1!A1",
+        "options": {},
+        "valueInputMode": "USER_ENTERED",
+        "data": [
+          [
+            "={{$json[\"symbol\"]}}",
+            "={{$json[\"entry\"]}}",
+            "={{$json[\"sl\"]}}",
+            "={{$json[\"tp1\"]}}",
+            "={{$json[\"tp2\"]}}",
+            "={{$json[\"tp3\"]}}",
+            "={{$json[\"direction\"]}}",
+            "={{$json[\"result\"]}}",
+            "={{$json[\"profit\"]}}",
+            "={{$json[\"tp_hit\"]}}"
+          ]
+        ]
+      },
+      "id": "5",
+      "name": "Save to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 1,
+      "position": [
+        900,
+        300
+      ],
+      "credentials": {
+        "googleApi": "Google API"
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Parse Signal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Signal": {
+      "main": [
+        [
+          {
+            "node": "Fetch Binance OHLC",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Binance OHLC": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Signal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Signal": {
+      "main": [
+        [
+          {
+            "node": "Save to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
